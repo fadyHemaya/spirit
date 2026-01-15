@@ -79,7 +79,7 @@ WHERE 1 `
 )
 
 type LockDetail struct {
-	PID          int
+	PID          sql.NullInt64 // Can be NULL for background threads
 	User         sql.NullString
 	Host         sql.NullString
 	Info         sql.NullString
@@ -182,6 +182,11 @@ func GetLockingTransactions(ctx context.Context, db *sql.DB, tables []*table.Tab
 			return nil, err
 		}
 
+		// Skip rows with NULL processlist_id (background threads)
+		if !lock.PID.Valid {
+			continue
+		}
+
 		logger.Info("found locking transaction", "lock", fmt.Sprintf("%#v", &lock))
 		locks = append(locks, lock)
 	}
@@ -195,23 +200,24 @@ func GetLockingTransactions(ctx context.Context, db *sql.DB, tables []*table.Tab
 
 	var uniquePids []int
 	for _, lock := range locks {
+		pid := int(lock.PID.Int64)
 		if lock.TrxWeight.Valid && lock.TrxWeight.Int64 > TransactionWeightThreshold {
 			logger.Warn("skipping transaction with weight exceeding threshold",
-				"pid", lock.PID,
+				"pid", pid,
 				"weight", lock.TrxWeight.Int64,
 				"threshold", TransactionWeightThreshold)
 			continue // Skip transactions that are too heavy
 		}
 		// Check if this PID is already in the unique list
 		found := false
-		for _, pid := range uniquePids {
-			if pid == lock.PID {
+		for _, existingPid := range uniquePids {
+			if existingPid == pid {
 				found = true
 				break
 			}
 		}
 		if !found {
-			uniquePids = append(uniquePids, lock.PID)
+			uniquePids = append(uniquePids, pid)
 		}
 	}
 
@@ -267,6 +273,10 @@ func GetTableLocks(ctx context.Context, db *sql.DB, tables []*table.TableInfo, l
 			&lock.PID,
 		); err != nil {
 			return nil, err
+		}
+		// Skip rows with NULL processlist_id (background threads)
+		if !lock.PID.Valid {
+			continue
 		}
 		locks = append(locks, &lock)
 	}
