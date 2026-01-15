@@ -818,23 +818,31 @@ func (c *Client) StartPeriodicFlush(ctx context.Context, interval time.Duration)
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			c.periodicFlushLock.Lock()
-			// At some point before cutover we want to disable th periodic flush.
-			// The migrator will do this by calling StopPeriodicFlush()
-			if !c.periodicFlushEnabled {
-				c.periodicFlushLock.Unlock()
-				return
-			}
-			startLoop := time.Now()
-			c.logger.Debug("starting periodic flush of binary log")
-			// The periodic flush does not respect the throttler since we want to advance the binlog position
-			// we allow this to run, and then expect that if it is under load the throttler
-			// will kick in and slow down the copy-rows.
-			if err := c.flush(ctx, false, nil); err != nil {
-				c.logger.Error("error flushing binary log", "error", err)
-			}
+		c.periodicFlushLock.Lock()
+		// At some point before cutover we want to disable th periodic flush.
+		// The migrator will do this by calling StopPeriodicFlush()
+		if !c.periodicFlushEnabled {
 			c.periodicFlushLock.Unlock()
-			c.logger.Info("finished periodic flush of binary log", "total-duration", time.Since(startLoop), "batch-size", atomic.LoadInt64(&c.targetBatchSize))
+			return
+		}
+		startLoop := time.Now()
+		deltasBefore := c.GetDeltaLen()
+		c.logger.Info("starting periodic flush of binary log", "deltas-before", deltasBefore)
+		// The periodic flush does not respect the throttler since we want to advance the binlog position
+		// we allow this to run, and then expect that if it is under load the throttler
+		// will kick in and slow down the copy-rows.
+		if err := c.flush(ctx, false, nil); err != nil {
+			c.logger.Error("error flushing binary log", "error", err)
+		}
+		deltasAfter := c.GetDeltaLen()
+		c.periodicFlushLock.Unlock()
+		c.logger.Info("finished periodic flush of binary log",
+			"total-duration", time.Since(startLoop),
+			"batch-size", atomic.LoadInt64(&c.targetBatchSize),
+			"deltas-before", deltasBefore,
+			"deltas-after", deltasAfter,
+			"deltas-flushed", deltasBefore-deltasAfter,
+		)
 		}
 	}
 }
