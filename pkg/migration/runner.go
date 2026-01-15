@@ -130,6 +130,7 @@ func (r *Runner) Run(ctx context.Context) error {
 	var err error
 	r.dbConfig = dbconn.NewDBConfig()
 	r.dbConfig.LockWaitTimeout = int(r.migration.LockWaitTimeout.Seconds())
+	r.dbConfig.MaxRetries = r.migration.MaxRetries
 	r.dbConfig.InterpolateParams = r.migration.InterpolateParams
 	r.dbConfig.ForceKill = r.migration.ForceKill
 	// Map TLS configuration from migration to dbConfig
@@ -389,6 +390,10 @@ func (r *Runner) prepareForCutover(ctx context.Context) error {
 	// The checksum is ONLINE after an initial lock
 	// for consistency. It is the main way that we determine that
 	// this program is safe to use even when immature.
+	if r.migration.SkipChecksum {
+		r.logger.Warn("skipping checksum phase (--skip-checksum flag is set)")
+		return nil
+	}
 	return r.checksum(ctx)
 }
 

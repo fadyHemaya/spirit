@@ -95,6 +95,11 @@ func RetryableTransaction(ctx context.Context, db *sql.DB, ignoreDupKeyWarnings 
 				if err != nil {
 					_ = trx.Rollback()
 					if i < config.MaxRetries-1 && !isFatal {
+						slog.Warn("retryable error, will retry",
+							"attempt", i+1,
+							"max_retries", config.MaxRetries,
+							"error", err.Error(),
+						)
 						backoff(i)
 					}
 				}
@@ -180,10 +185,20 @@ func RetryableTransaction(ctx context.Context, db *sql.DB, ignoreDupKeyWarnings 
 	return rowsAffected, err
 }
 
-// backoff sleeps a few milliseconds before retrying.
+// backoff sleeps before retrying, with exponential backoff.
+// For high-contention scenarios (like large tables with heavy traffic),
+// we use a more aggressive backoff to reduce lock contention.
 func backoff(i int) {
-	randFactor := i * rand.Intn(10) * int(time.Millisecond)
-	time.Sleep(time.Duration(randFactor))
+	// Base delay: 100ms, 200ms, 400ms, 800ms, 1600ms, etc. (exponential)
+	// Plus random jitter up to 100ms to avoid thundering herd
+	baseDelay := time.Duration(100*(1<<i)) * time.Millisecond
+	jitter := time.Duration(rand.Intn(100)) * time.Millisecond
+	delay := baseDelay + jitter
+	// Cap at 5 seconds
+	if delay > 5*time.Second {
+		delay = 5*time.Second + jitter
+	}
+	time.Sleep(delay)
 }
 
 // ForceExec is like Exec but it has some added logic to force kill
