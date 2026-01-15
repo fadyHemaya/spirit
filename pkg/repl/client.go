@@ -102,6 +102,11 @@ type Client struct {
 	periodicFlushLock    sync.Mutex
 	periodicFlushEnabled bool
 
+	// flushBlocked prevents any flush operations when true.
+	// This allows manual control over when flushes happen.
+	flushBlockedLock sync.RWMutex
+	flushBlocked     bool
+
 	cancelFunc func()
 	isClosed   atomic.Bool
 	logger     *slog.Logger
@@ -766,7 +771,19 @@ func (c *Client) flush(ctx context.Context, underLock bool, lock *dbconn.TableLo
 
 // Flush empties the changeset in a loop until the amount of changes is considered "trivial".
 // The loop is required, because changes continue to be added while the flush is occurring.
+// If flush is blocked, this will wait until it's unblocked (checking every 500ms).
 func (c *Client) Flush(ctx context.Context) error {
+	// Wait if flush is blocked
+	for c.IsFlushBlocked() {
+		c.logger.Info("flush blocked, waiting...", "deltas", c.GetDeltaLen())
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+			// Check again
+		}
+	}
+
 	for {
 		// Repeat in a loop until the changeset length is trivial
 		if err := c.flush(ctx, false, nil); err != nil {
@@ -797,12 +814,57 @@ func (c *Client) Flush(ctx context.Context) error {
 	return c.flush(ctx, false, nil)
 }
 
+// FlushForced flushes the binlog changes even if flush is blocked.
+// This is used for manual flush commands via socket control.
+func (c *Client) FlushForced(ctx context.Context) error {
+	for {
+		if err := c.flush(ctx, false, nil); err != nil {
+			return err
+		}
+		if err := c.BlockWait(ctx); err != nil {
+			c.logger.Warn("error waiting for binlog reader to catch up", "error", err)
+			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+				return ctx.Err()
+			}
+			continue
+		}
+		if c.GetDeltaLen() < binlogTrivialThreshold {
+			break
+		}
+	}
+	return c.flush(ctx, false, nil)
+}
+
 // StopPeriodicFlush disables the periodic flush, also guaranteeing
 // when it returns there is no current flush running
 func (c *Client) StopPeriodicFlush() {
 	c.periodicFlushLock.Lock()
 	defer c.periodicFlushLock.Unlock()
 	c.periodicFlushEnabled = false
+}
+
+// BlockFlush prevents any flush operations from running.
+// Use this for manual control over when flushes happen.
+func (c *Client) BlockFlush() {
+	c.flushBlockedLock.Lock()
+	defer c.flushBlockedLock.Unlock()
+	c.flushBlocked = true
+	c.logger.Warn("binlog flush BLOCKED - no flushes will occur until unblocked")
+}
+
+// UnblockFlush allows flush operations to run again.
+func (c *Client) UnblockFlush() {
+	c.flushBlockedLock.Lock()
+	defer c.flushBlockedLock.Unlock()
+	c.flushBlocked = false
+	c.logger.Info("binlog flush UNBLOCKED - flushes can now occur")
+}
+
+// IsFlushBlocked returns true if flush operations are blocked.
+func (c *Client) IsFlushBlocked() bool {
+	c.flushBlockedLock.RLock()
+	defer c.flushBlockedLock.RUnlock()
+	return c.flushBlocked
 }
 
 // StartPeriodicFlush starts a loop that periodically flushes the binlog changeset.

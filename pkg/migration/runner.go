@@ -72,6 +72,9 @@ type Runner struct {
 
 	// MetricsSink
 	metricsSink metrics.Sink
+
+	// Socket throttler for manual control (if --socket-control is enabled)
+	socketThrottler *throttler.SocketThrottler
 }
 
 var _ status.Task = (*Runner)(nil)
@@ -495,7 +498,8 @@ func (r *Runner) setupCopierCheckerAndReplClient(ctx context.Context) error {
 	var copierThrottler throttler.Throttler = &throttler.Noop{}
 	if r.migration.SocketControl {
 		socketPath := throttler.SocketPathForTable(r.migration.Database, r.migration.Table)
-		copierThrottler = throttler.NewSocketThrottler(socketPath, r.replClient, r.logger)
+		r.socketThrottler = throttler.NewSocketThrottler(socketPath, r.replClient, r.logger)
+		copierThrottler = r.socketThrottler
 		r.logger.Info("socket control enabled",
 			"socket", socketPath,
 		)
@@ -695,6 +699,14 @@ func (r *Runner) setup(ctx context.Context) error {
 	// Start background monitoring routines (common logic for both paths)
 	r.startBackgroundRoutines(ctx)
 
+	// Open socket control if enabled - this stays open for the entire migration
+	// (copy phase, applyChangeset phase, checksum, cutover)
+	if r.socketThrottler != nil {
+		if err := r.socketThrottler.Open(ctx); err != nil {
+			r.logger.Warn("failed to open socket throttler", "error", err)
+		}
+	}
+
 	return nil
 }
 
@@ -817,6 +829,9 @@ func (r *Runner) Close() error {
 		if err != nil {
 			return err
 		}
+	}
+	if r.socketThrottler != nil {
+		r.socketThrottler.Close()
 	}
 	if r.replica != nil {
 		err := r.replica.Close()

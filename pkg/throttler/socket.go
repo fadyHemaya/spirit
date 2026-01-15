@@ -18,7 +18,9 @@ import (
 //   - "throttle" or "pause": Pause the copier
 //   - "no-throttle" or "resume": Resume the copier
 //   - "status": Get current status
-//   - "flush": Pause copier and trigger a flush
+//   - "flush": Pause copier and trigger a flush (bypasses flush block)
+//   - "pause-flush": Block all automatic flush operations
+//   - "resume-flush": Unblock flush operations
 type SocketThrottler struct {
 	socketPath string
 	logger     *slog.Logger
@@ -31,10 +33,14 @@ type SocketThrottler struct {
 	cancelFunc context.CancelFunc
 }
 
-// Flusher is an interface for triggering a binlog flush.
+// Flusher is an interface for triggering a binlog flush and controlling flush behavior.
 type Flusher interface {
 	Flush(ctx context.Context) error
+	FlushForced(ctx context.Context) error
 	GetDeltaLen() int
+	BlockFlush()
+	UnblockFlush()
+	IsFlushBlocked() bool
 }
 
 var _ Throttler = &SocketThrottler{}
@@ -70,7 +76,7 @@ func (t *SocketThrottler) Open(ctx context.Context) error {
 
 	t.logger.Info("socket throttler listening",
 		"socket", t.socketPath,
-		"commands", "throttle|pause, no-throttle|resume, status, flush",
+		"commands", "pause, resume, status, flush, pause-flush, resume-flush",
 	)
 
 	go t.acceptConnections()
@@ -173,14 +179,20 @@ func (t *SocketThrottler) handleCommand(command string) string {
 		throttled := t.throttled
 		t.mu.RUnlock()
 		deltaLen := 0
+		flushBlocked := false
 		if t.flusher != nil {
 			deltaLen = t.flusher.GetDeltaLen()
+			flushBlocked = t.flusher.IsFlushBlocked()
 		}
-		status := "running"
+		copierStatus := "running"
 		if throttled {
-			status = "paused"
+			copierStatus = "paused"
 		}
-		return fmt.Sprintf("OK: copier=%s binlog_deltas=%d", status, deltaLen)
+		flushStatus := "enabled"
+		if flushBlocked {
+			flushStatus = "blocked"
+		}
+		return fmt.Sprintf("OK: copier=%s flush=%s binlog_deltas=%d", copierStatus, flushStatus, deltaLen)
 
 	case "flush":
 		t.mu.Lock()
@@ -190,8 +202,9 @@ func (t *SocketThrottler) handleCommand(command string) string {
 
 		if t.flusher != nil {
 			deltasBefore := t.flusher.GetDeltaLen()
-			t.logger.Info("starting flush", "deltas_before", deltasBefore)
-			if err := t.flusher.Flush(t.ctx); err != nil {
+			t.logger.Info("starting forced flush", "deltas_before", deltasBefore)
+			// Use FlushForced to bypass the flush block
+			if err := t.flusher.FlushForced(t.ctx); err != nil {
 				t.logger.Error("flush error", "error", err)
 				return fmt.Sprintf("ERROR: flush failed: %v", err)
 			}
@@ -206,8 +219,22 @@ func (t *SocketThrottler) handleCommand(command string) string {
 		}
 		return "OK: copier paused (no flusher configured)"
 
+	case "pause-flush", "block-flush":
+		if t.flusher != nil {
+			t.flusher.BlockFlush()
+			return "OK: binlog flush BLOCKED - automatic flushes will wait until unblocked"
+		}
+		return "ERROR: no flusher configured"
+
+	case "resume-flush", "unblock-flush":
+		if t.flusher != nil {
+			t.flusher.UnblockFlush()
+			return "OK: binlog flush UNBLOCKED - automatic flushes can now proceed"
+		}
+		return "ERROR: no flusher configured"
+
 	default:
-		return fmt.Sprintf("ERROR: unknown command '%s'. Valid commands: throttle|pause, no-throttle|resume, status, flush", command)
+		return fmt.Sprintf("ERROR: unknown command '%s'. Valid commands: pause, resume, status, flush, pause-flush, resume-flush", command)
 	}
 }
 
