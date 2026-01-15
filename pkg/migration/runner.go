@@ -493,16 +493,11 @@ func (r *Runner) setupCopierCheckerAndReplClient(ctx context.Context) error {
 
 	// Determine which throttler to use for the copier
 	var copierThrottler throttler.Throttler = &throttler.Noop{}
-	if r.migration.BinlogThrottleHighWM > 0 {
-		copierThrottler = throttler.NewBinlogThrottler(
-			r.replClient,
-			r.migration.BinlogThrottleHighWM,
-			r.migration.BinlogThrottleLowWM,
-			r.logger,
-		)
-		r.logger.Info("binlog throttling enabled",
-			"high_watermark", r.migration.BinlogThrottleHighWM,
-			"low_watermark", r.migration.BinlogThrottleLowWM,
+	if r.migration.SocketControl {
+		socketPath := throttler.SocketPathForTable(r.migration.Database, r.migration.Table)
+		copierThrottler = throttler.NewSocketThrottler(socketPath, r.replClient, r.logger)
+		r.logger.Info("socket control enabled",
+			"socket", socketPath,
 		)
 	}
 
