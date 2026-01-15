@@ -43,6 +43,7 @@ type Migration struct {
 	DeferCutOver         bool          `name:"defer-cutover" help:"Defer cutover (and checksum) until sentinel table is dropped" optional:"" default:"false"`
 	ForceKill            bool          `name:"force-kill" help:"Kill long-running transactions in order to acquire metadata lock (MDL) at checksum and cutover time" optional:"" default:"false"`
 	SkipChecksum         bool          `name:"skip-checksum" help:"Skip the checksum phase (use with caution - no data verification)" optional:"" default:"false"`
+	DeferBinlogFlush     bool          `name:"defer-binlog-flush" help:"Defer binlog flushing until after copy completes (prevents deadlocks but increases memory usage)" optional:"" default:"false"`
 	Strict               bool          `name:"strict" help:"Exit on --alter mismatch when incomplete migration is detected" optional:"" default:"false"`
 	Statement            string        `name:"statement" help:"The SQL statement to run (replaces --table and --alter)" optional:"" default:""`
 	// TLS Configuration
