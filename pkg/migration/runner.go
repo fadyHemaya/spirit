@@ -619,18 +619,21 @@ func (r *Runner) setupReplicationThrottler(ctx context.Context) error {
 }
 
 // startBackgroundRoutines starts the background routines needed for migration monitoring.
-// This includes table statistics updates, periodic binlog flushing, and DDL change notifications.
+// This includes table statistics updates and DDL change notifications.
+// NOTE: Periodic binlog flushing is intentionally NOT started here to avoid
+// deadlocks between the copier and flusher writing to the same table.
+// The flush will happen after copy completes in prepareForCutover.
 func (r *Runner) startBackgroundRoutines(ctx context.Context) {
 	// Start routines in table and replication packages to
-	// Continuously update the min/max and estimated rows
-	// and to flush the binary log position periodically.
-	// These will both be stopped when the copier finishes
-	// and checksum starts, although the PeriodicFlush
-	// will be restarted again after.
+	// Continuously update the min/max and estimated rows.
 	for _, change := range r.changes {
 		go change.table.AutoUpdateStatistics(ctx, tableStatUpdateInterval, r.logger)
 	}
-	go r.replClient.StartPeriodicFlush(ctx, repl.DefaultFlushInterval)
+	// NOTE: We intentionally do NOT start periodic flush here.
+	// Starting it causes deadlocks between the copier (INSERT IGNORE) and
+	// the flusher (REPLACE INTO) when they both write to _table_new.
+	// The binlog changes will be flushed after copy completes.
+	// go r.replClient.StartPeriodicFlush(ctx, repl.DefaultFlushInterval)
 	go r.tableChangeNotification(ctx)
 	// Start go routines for checkpointing and dumping status
 	status.WatchTask(ctx, r, r.logger)
