@@ -42,9 +42,11 @@ type Migration struct {
 	SkipDropAfterCutover bool          `name:"skip-drop-after-cutover" help:"Keep old table after completing cutover" optional:"" default:"false"`
 	DeferCutOver         bool          `name:"defer-cutover" help:"Defer cutover (and checksum) until sentinel table is dropped" optional:"" default:"false"`
 	ForceKill            bool          `name:"force-kill" help:"Kill long-running transactions in order to acquire metadata lock (MDL) at checksum and cutover time" optional:"" default:"false"`
-	SkipChecksum         bool          `name:"skip-checksum" help:"Skip the checksum phase (use with caution - no data verification)" optional:"" default:"false"`
-	DeferBinlogFlush     bool          `name:"defer-binlog-flush" help:"Defer binlog flushing until after copy completes (prevents deadlocks but increases memory usage)" optional:"" default:"false"`
-	Strict               bool          `name:"strict" help:"Exit on --alter mismatch when incomplete migration is detected" optional:"" default:"false"`
+	SkipChecksum           bool          `name:"skip-checksum" help:"Skip the checksum phase (use with caution - no data verification)" optional:"" default:"false"`
+	DeferBinlogFlush       bool          `name:"defer-binlog-flush" help:"Defer binlog flushing until after copy completes (prevents deadlocks but increases memory usage)" optional:"" default:"false"`
+	BinlogThrottleHighWM   int           `name:"binlog-throttle-high" help:"Pause copier when binlog deltas exceed this (0 = disabled)" optional:"" default:"0"`
+	BinlogThrottleLowWM    int           `name:"binlog-throttle-low" help:"Resume copier when binlog deltas fall below this" optional:"" default:"100000"`
+	Strict                 bool          `name:"strict" help:"Exit on --alter mismatch when incomplete migration is detected" optional:"" default:"false"`
 	Statement            string        `name:"statement" help:"The SQL statement to run (replaces --table and --alter)" optional:"" default:""`
 	// TLS Configuration
 	TLSMode            string `name:"tls-mode" help:"TLS connection mode (case insensitive): DISABLED, PREFERRED (default), REQUIRED, VERIFY_CA, VERIFY_IDENTITY" optional:""`

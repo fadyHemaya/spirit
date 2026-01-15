@@ -470,22 +470,8 @@ func (r *Runner) checkpointTableName() string {
 func (r *Runner) setupCopierCheckerAndReplClient(ctx context.Context) error {
 	var err error
 	r.checkpointTable = table.NewTableInfo(r.db, r.changes[0].table.SchemaName, r.checkpointTableName())
-	// Create copier with the prepared chunker
-	r.copier, err = copier.NewCopier(r.db, r.copyChunker, &copier.CopierConfig{
-		Concurrency:                   r.migration.Threads,
-		TargetChunkTime:               r.migration.TargetChunkTime,
-		Throttler:                     &throttler.Noop{},
-		Logger:                        r.logger,
-		MetricsSink:                   r.metricsSink,
-		DBConfig:                      r.dbConfig,
-		UseExperimentalBufferedCopier: r.migration.EnableExperimentalBufferedCopy,
-	})
-	if err != nil {
-		return err
-	}
 
-	// Set the binlog position.
-	// Create a binlog subscriber
+	// Create the binlog subscriber first (needed for binlog throttler)
 	r.replClient = repl.NewClient(r.db, r.migration.Host, r.migration.Username, *r.migration.Password, &repl.ClientConfig{
 		Logger:          r.logger,
 		Concurrency:     r.migration.Threads,
@@ -503,6 +489,35 @@ func (r *Runner) setupCopierCheckerAndReplClient(ctx context.Context) error {
 		if err := r.replClient.AddSubscription(change.table, change.newTable, r.copyChunker); err != nil {
 			return err
 		}
+	}
+
+	// Determine which throttler to use for the copier
+	var copierThrottler throttler.Throttler = &throttler.Noop{}
+	if r.migration.BinlogThrottleHighWM > 0 {
+		copierThrottler = throttler.NewBinlogThrottler(
+			r.replClient,
+			r.migration.BinlogThrottleHighWM,
+			r.migration.BinlogThrottleLowWM,
+			r.logger,
+		)
+		r.logger.Info("binlog throttling enabled",
+			"high_watermark", r.migration.BinlogThrottleHighWM,
+			"low_watermark", r.migration.BinlogThrottleLowWM,
+		)
+	}
+
+	// Create copier with the prepared chunker
+	r.copier, err = copier.NewCopier(r.db, r.copyChunker, &copier.CopierConfig{
+		Concurrency:                   r.migration.Threads,
+		TargetChunkTime:               r.migration.TargetChunkTime,
+		Throttler:                     copierThrottler,
+		Logger:                        r.logger,
+		MetricsSink:                   r.metricsSink,
+		DBConfig:                      r.dbConfig,
+		UseExperimentalBufferedCopier: r.migration.EnableExperimentalBufferedCopy,
+	})
+	if err != nil {
+		return err
 	}
 
 	r.checker, err = checksum.NewChecker(r.db, r.checksumChunker, r.replClient, &checksum.CheckerConfig{
