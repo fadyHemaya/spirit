@@ -13,10 +13,21 @@ type DeltaLenGetter interface {
 	GetDeltaLen() int
 }
 
+// Flusher is an interface for triggering a binlog flush.
+type Flusher interface {
+	Flush(ctx context.Context) error
+}
+
+// BinlogFlusher combines both interfaces - typically the replication client implements both.
+type BinlogFlusher interface {
+	DeltaLenGetter
+	Flusher
+}
+
 // BinlogThrottler throttles the copier when binlog deltas exceed a threshold.
-// When throttled, it waits for the deltas to be flushed before allowing the copier to continue.
+// When throttled, it pauses the copier and actively flushes binlog changes.
 type BinlogThrottler struct {
-	deltaGetter    DeltaLenGetter
+	replClient     BinlogFlusher
 	highWatermark  int           // Pause copier when deltas exceed this
 	lowWatermark   int           // Resume copier when deltas fall below this
 	checkInterval  time.Duration // How often to check delta count
@@ -24,6 +35,7 @@ type BinlogThrottler struct {
 
 	mu         sync.RWMutex
 	throttled  bool
+	flushing   bool
 	ctx        context.Context
 	cancelFunc context.CancelFunc
 }
@@ -33,9 +45,9 @@ var _ Throttler = &BinlogThrottler{}
 // NewBinlogThrottler creates a new BinlogThrottler.
 // highWatermark: pause copier when deltas exceed this (e.g., 500000)
 // lowWatermark: resume copier when deltas fall below this (e.g., 100000)
-func NewBinlogThrottler(deltaGetter DeltaLenGetter, highWatermark, lowWatermark int, logger *slog.Logger) *BinlogThrottler {
+func NewBinlogThrottler(replClient BinlogFlusher, highWatermark, lowWatermark int, logger *slog.Logger) *BinlogThrottler {
 	return &BinlogThrottler{
-		deltaGetter:   deltaGetter,
+		replClient:    replClient,
 		highWatermark: highWatermark,
 		lowWatermark:  lowWatermark,
 		checkInterval: 1 * time.Second,
@@ -95,33 +107,68 @@ func (t *BinlogThrottler) monitor() {
 }
 
 func (t *BinlogThrottler) updateThrottleState() {
-	deltaLen := t.deltaGetter.GetDeltaLen()
+	deltaLen := t.replClient.GetDeltaLen()
 
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	wasThrottled := t.throttled
+	isFlushing := t.flushing
 
 	if !t.throttled && deltaLen > t.highWatermark {
 		t.throttled = true
-		t.logger.Warn("binlog deltas exceeded high watermark, pausing copier",
+		t.logger.Warn("binlog deltas exceeded high watermark, pausing copier to flush",
 			"deltas", deltaLen,
 			"high_watermark", t.highWatermark,
 		)
 	} else if t.throttled && deltaLen < t.lowWatermark {
 		t.throttled = false
+		t.flushing = false
 		t.logger.Info("binlog deltas below low watermark, resuming copier",
 			"deltas", deltaLen,
 			"low_watermark", t.lowWatermark,
 		)
 	}
 
+	// If we just became throttled or are throttled and not flushing, start a flush
+	shouldFlush := t.throttled && !isFlushing
+	if shouldFlush {
+		t.flushing = true
+	}
+	t.mu.Unlock()
+
+	// Trigger flush outside the lock to avoid deadlock
+	if shouldFlush {
+		go t.doFlush()
+	}
+
 	// Log periodic status when throttled
 	if t.throttled && wasThrottled {
-		t.logger.Info("copier still paused waiting for binlog flush",
+		t.logger.Info("copier paused, flushing binlog",
 			"deltas", deltaLen,
 			"low_watermark", t.lowWatermark,
 		)
 	}
+}
+
+// doFlush performs the actual flush operation.
+func (t *BinlogThrottler) doFlush() {
+	t.logger.Info("starting binlog flush while copier is paused")
+	startTime := time.Now()
+	deltasBefore := t.replClient.GetDeltaLen()
+
+	if err := t.replClient.Flush(t.ctx); err != nil {
+		t.logger.Error("error during binlog flush", "error", err)
+	}
+
+	deltasAfter := t.replClient.GetDeltaLen()
+	t.logger.Info("binlog flush completed",
+		"duration", time.Since(startTime),
+		"deltas_before", deltasBefore,
+		"deltas_after", deltasAfter,
+		"deltas_flushed", deltasBefore-deltasAfter,
+	)
+
+	t.mu.Lock()
+	t.flushing = false
+	t.mu.Unlock()
 }
 
