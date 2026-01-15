@@ -304,6 +304,12 @@ func (c *SingleChecker) initConnPool(ctx context.Context) error {
 	if err := c.feed.Flush(ctx); err != nil {
 		return err
 	}
+	
+	// Brief pause to allow any in-flight transactions to complete
+	// and release their locks before we try to acquire the table lock.
+	// This helps avoid lock contention with our own flush operations.
+	time.Sleep(20 * time.Second)
+	
 	// Lock the source and target table in a trx
 	// so the connection is not used by others
 	c.logger.Info("starting checksum operation, this will require a table lock")
