@@ -90,6 +90,11 @@ func (c *Unbuffered) StartTime() time.Time {
 
 func (c *Unbuffered) Run(ctx context.Context) error {
 	c.startTime = time.Now()
+	// Open the throttler (e.g., to start listening on socket)
+	if err := c.throttler.Open(ctx); err != nil {
+		return fmt.Errorf("failed to open throttler: %w", err)
+	}
+	defer c.throttler.Close()
 	go c.estimateRowsPerSecondLoop(ctx) // estimate rows while copying
 	g, errGrpCtx := errgroup.WithContext(ctx)
 	g.SetLimit(c.concurrency)
