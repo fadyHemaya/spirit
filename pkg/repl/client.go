@@ -789,9 +789,16 @@ func (c *Client) Flush(ctx context.Context) error {
 		if err := c.flush(ctx, false, nil); err != nil {
 			return err
 		}
-		// When far behind in binlog processing, skip BlockWait to avoid
-		// wasting time on timeouts. Just flush what we have and check deltas.
+		// Check if deltas are low enough to proceed
 		if c.GetDeltaLen() < binlogTrivialThreshold {
+			// Verify we're reasonably caught up before breaking
+			// Try BlockWait with short timeout to avoid wasting too much time
+			if err := c.blockWaitWithTimeout(ctx, 5*time.Second); err != nil {
+				// If still far behind, continue flushing
+				c.logger.Info("still catching up, continuing flush loop", "deltas", c.GetDeltaLen())
+				continue
+			}
+			// Successfully caught up
 			break
 		}
 		// Small delay to allow binlog reader to buffer more changes
@@ -814,9 +821,16 @@ func (c *Client) FlushForced(ctx context.Context) error {
 		if err := c.flush(ctx, false, nil); err != nil {
 			return err
 		}
-		// When far behind in binlog processing, skip BlockWait to avoid
-		// wasting time on timeouts. Just flush what we have and check deltas.
+		// Check if deltas are low enough to proceed
 		if c.GetDeltaLen() < binlogTrivialThreshold {
+			// Verify we're reasonably caught up before breaking
+			// Try BlockWait with short timeout to avoid wasting too much time
+			if err := c.blockWaitWithTimeout(ctx, 5*time.Second); err != nil {
+				// If still far behind, continue flushing
+				c.logger.Info("still catching up, continuing flush loop", "deltas", c.GetDeltaLen())
+				continue
+			}
+			// Successfully caught up
 			break
 		}
 		// Small delay to allow binlog reader to buffer more changes
@@ -926,6 +940,30 @@ func (c *Client) BlockWait(ctx context.Context) error {
 			if err := dbconn.Exec(ctx, c.db, "FLUSH BINARY LOGS"); err != nil {
 				return err // it could be context cancelled, return it
 			}
+			if c.getBufferedPos().Compare(targetPos) >= 0 {
+				return nil // we are up to date!
+			}
+			// We are not caught up yet, so we need to wait.
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+}
+
+// blockWaitWithTimeout is like BlockWait but with a configurable timeout.
+// This allows us to check if we're caught up without wasting too much time
+// when far behind.
+func (c *Client) blockWaitWithTimeout(ctx context.Context, timeout time.Duration) error {
+	targetPos, err := c.getCurrentBinlogPosition(ctx)
+	if err != nil {
+		return err
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-timer.C:
+			return fmt.Errorf("timed out waiting to catch up to source position: %v, current position is: %v", targetPos, c.getBufferedPos())
+		default:
 			if c.getBufferedPos().Compare(targetPos) >= 0 {
 				return nil // we are up to date!
 			}
