@@ -42,7 +42,7 @@ type DBConfig struct {
 func NewDBConfig() *DBConfig {
 	return &DBConfig{
 		LockWaitTimeout:          30,
-		InnodbLockWaitTimeout:    30, // Increased from 3 for high-traffic tables
+		InnodbLockWaitTimeout:    3,  // Keep short to fail fast and retry quickly
 		MaxRetries:               10, // Increased from 3 for high-contention scenarios
 		MaxOpenConnections:       32,    // default is high for historical tests. It's overwritten by the user threads count + 2 for headroom.
 		RangeOptimizerMaxMemSize: 0,     // default is 8M, we set to unlimited. Not user configurable (may reconsider in the future).
