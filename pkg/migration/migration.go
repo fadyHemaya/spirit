@@ -45,7 +45,7 @@ type Migration struct {
 	SkipChecksum           bool          `name:"skip-checksum" help:"Skip the checksum phase (use with caution - no data verification)" optional:"" default:"false"`
 	DeferBinlogFlush       bool          `name:"defer-binlog-flush" help:"Defer binlog flushing until after copy completes (prevents deadlocks but increases memory usage)" optional:"" default:"false"`
 	BinlogThrottleHighWM   int           `name:"binlog-throttle-high" help:"Pause copier when binlog deltas exceed this (0 = disabled)" optional:"" default:"0"`
-	BinlogThrottleLowWM    int           `name:"binlog-throttle-low" help:"Resume copier when binlog deltas fall below this" optional:"" default:"100000"`
+	BinlogThrottleLowWM    int           `name:"binlog-throttle-low" help:"Resume copier when binlog deltas fall below this" optional:"" default:"500000"`
 	Strict                 bool          `name:"strict" help:"Exit on --alter mismatch when incomplete migration is detected" optional:"" default:"false"`
 	Statement            string        `name:"statement" help:"The SQL statement to run (replaces --table and --alter)" optional:"" default:""`
 	// TLS Configuration
