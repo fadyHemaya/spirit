@@ -789,24 +789,17 @@ func (c *Client) Flush(ctx context.Context) error {
 		if err := c.flush(ctx, false, nil); err != nil {
 			return err
 		}
-		// BlockWait to ensure we've read everything from the server
-		// into our buffer. This can timeout, in which case we start
-		// a new loop. Typically a timeout occurs when we resume from a checkpoint
-		// and move from the copy phase to the apply phase, and there's
-		// actually a lot to do!
-		if err := c.BlockWait(ctx); err != nil {
-			c.logger.Warn("error waiting for binlog reader to catch up", "error", err)
-			// Check if the error is due to context cancellation
-			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
-				return ctx.Err()
-			}
-			continue
-		}
-		//  If it doesn't timeout, we ensure the deltas
-		// are low, and then we can break. Otherwise we continue
-		// with a new loop.
+		// When far behind in binlog processing, skip BlockWait to avoid
+		// wasting time on timeouts. Just flush what we have and check deltas.
 		if c.GetDeltaLen() < binlogTrivialThreshold {
 			break
+		}
+		// Small delay to allow binlog reader to buffer more changes
+		// before next flush iteration
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
 	// Flush one more time, since after BlockWait()
@@ -821,15 +814,17 @@ func (c *Client) FlushForced(ctx context.Context) error {
 		if err := c.flush(ctx, false, nil); err != nil {
 			return err
 		}
-		if err := c.BlockWait(ctx); err != nil {
-			c.logger.Warn("error waiting for binlog reader to catch up", "error", err)
-			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
-				return ctx.Err()
-			}
-			continue
-		}
+		// When far behind in binlog processing, skip BlockWait to avoid
+		// wasting time on timeouts. Just flush what we have and check deltas.
 		if c.GetDeltaLen() < binlogTrivialThreshold {
 			break
+		}
+		// Small delay to allow binlog reader to buffer more changes
+		// before next flush iteration
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
 	return c.flush(ctx, false, nil)

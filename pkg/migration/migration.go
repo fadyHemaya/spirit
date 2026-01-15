@@ -43,6 +43,7 @@ type Migration struct {
 	DeferCutOver         bool          `name:"defer-cutover" help:"Defer cutover (and checksum) until sentinel table is dropped" optional:"" default:"false"`
 	ForceKill            bool          `name:"force-kill" help:"Kill long-running transactions in order to acquire metadata lock (MDL) at checksum and cutover time" optional:"" default:"false"`
 	SkipChecksum           bool          `name:"skip-checksum" help:"Skip the checksum phase (use with caution - no data verification)" optional:"" default:"false"`
+	SkipCopyRows           bool          `name:"skip-copy-rows" help:"Skip the copy rows phase and go directly to apply changeset (use when resuming and copy is complete)" optional:"" default:"false"`
 	DeferBinlogFlush       bool          `name:"defer-binlog-flush" help:"Defer binlog flushing until after copy completes (prevents deadlocks but increases memory usage)" optional:"" default:"false"`
 	SocketControl          bool          `name:"socket-control" help:"Enable Unix socket for manual throttle control (socket path: /tmp/spirit.<db>.<table>.sock)" optional:"" default:"false"`
 	Strict                 bool          `name:"strict" help:"Exit on --alter mismatch when incomplete migration is detected" optional:"" default:"false"`

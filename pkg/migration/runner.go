@@ -240,12 +240,17 @@ func (r *Runner) Run(ctx context.Context) error {
 	// of migrations usually spend time. It is not strictly necessary,
 	// but we always recopy the last-bit, even if we are resuming
 	// partially through the checksum.
-	r.status.Set(status.CopyRows)
-	if err := r.copier.Run(ctx); err != nil {
-		return err
+	if r.migration.SkipCopyRows {
+		r.logger.Info("skipping copy rows phase (--skip-copy-rows enabled)")
+		r.copyDuration = 0
+	} else {
+		r.status.Set(status.CopyRows)
+		if err := r.copier.Run(ctx); err != nil {
+			return err
+		}
+		r.logger.Info("copy rows complete")
+		r.copyDuration = time.Since(r.copier.StartTime())
 	}
-	r.logger.Info("copy rows complete")
-	r.copyDuration = time.Since(r.copier.StartTime())
 
 	// Disable both watermark optimizations so that all changes can be flushed.
 	// The watermark optimizations can prevent some keys from being flushed,
