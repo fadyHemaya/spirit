@@ -305,10 +305,12 @@ func (c *SingleChecker) initConnPool(ctx context.Context) error {
 		return err
 	}
 	
-	// Brief pause to allow any in-flight transactions to complete
-	// and release their locks before we try to acquire the table lock.
-	// This helps avoid lock contention with our own flush operations.
-	time.Sleep(20 * time.Second)
+	// Wait for all database connections to become idle before acquiring the lock.
+	// This prevents our own flush operations from blocking our lock acquisition.
+	c.logger.Info("waiting for all connections to become idle before acquiring table lock")
+	if err := c.waitForIdleConnections(ctx, 60*time.Second); err != nil {
+		c.logger.Warn("timeout waiting for idle connections, proceeding anyway", "error", err)
+	}
 	
 	// Lock the source and target table in a trx
 	// so the connection is not used by others
@@ -440,6 +442,38 @@ func (c *SingleChecker) runChecksum(ctx context.Context) error {
 		return err1
 	}
 	return nil
+}
+
+// waitForIdleConnections waits until all database connections are idle
+// or until the timeout is reached.
+func (c *SingleChecker) waitForIdleConnections(ctx context.Context, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	checkInterval := 500 * time.Millisecond
+	
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		
+		stats := c.db.Stats()
+		c.logger.Info("connection stats",
+			"in_use", stats.InUse,
+			"idle", stats.Idle,
+			"open", stats.OpenConnections,
+		)
+		
+		if stats.InUse == 0 {
+			c.logger.Info("all connections are idle, ready to acquire lock")
+			return nil
+		}
+		
+		time.Sleep(checkInterval)
+	}
+	
+	stats := c.db.Stats()
+	return fmt.Errorf("timeout waiting for idle connections, still have %d in use", stats.InUse)
 }
 
 // intersectColumns is similar to utils.IntersectColumns, but it
