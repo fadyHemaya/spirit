@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	binlogTrivialThreshold = 10000
+	binlogTrivialThreshold = 2000
 	// DefaultBatchSize is the number of rows in each batched REPLACE/DELETE statement.
 	// Larger is better, but we need to keep the run-time of the statement well below
 	// dbconn.maximumLockTime so that it doesn't prevent copy-row tasks from failing.
@@ -128,7 +128,7 @@ func NewClient(db *sql.DB, host string, username, password string, config *Clien
 		password:                   password,
 		logger:                     config.Logger,
 		targetBatchTime:            config.TargetBatchTime,
-		targetBatchSize:            DefaultBatchSize, // initial starting value.
+		targetBatchSize:            3000, // initial starting value - increased for faster catchup
 		concurrency:                config.Concurrency,
 		subscriptions:              make(map[string]Subscription),
 		onDDL:                      config.OnDDL,
@@ -801,12 +801,21 @@ func (c *Client) Flush(ctx context.Context) error {
 			// Successfully caught up
 			break
 		}
-		// Small delay to allow binlog reader to buffer more changes
-		// before next flush iteration
+		// Adaptive delay based on delta count to allow binlog reader to buffer more changes
+		// Shorter delay when deltas are low = faster processing when catching up
+		var sleepDuration time.Duration
+		deltaLen := c.GetDeltaLen()
+		if deltaLen < 1000 {
+			sleepDuration = 10 * time.Millisecond
+		} else if deltaLen < 5000 {
+			sleepDuration = 50 * time.Millisecond
+		} else {
+			sleepDuration = 100 * time.Millisecond
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(sleepDuration):
 		}
 	}
 	// Flush one more time, since after BlockWait()
@@ -833,12 +842,21 @@ func (c *Client) FlushForced(ctx context.Context) error {
 			// Successfully caught up
 			break
 		}
-		// Small delay to allow binlog reader to buffer more changes
-		// before next flush iteration
+		// Adaptive delay based on delta count to allow binlog reader to buffer more changes
+		// Shorter delay when deltas are low = faster processing when catching up
+		var sleepDuration time.Duration
+		deltaLen := c.GetDeltaLen()
+		if deltaLen < 1000 {
+			sleepDuration = 10 * time.Millisecond
+		} else if deltaLen < 5000 {
+			sleepDuration = 50 * time.Millisecond
+		} else {
+			sleepDuration = 100 * time.Millisecond
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
+		case <-time.After(sleepDuration):
 		}
 	}
 	return c.flush(ctx, false, nil)

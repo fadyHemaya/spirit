@@ -361,9 +361,20 @@ func (r *Runner) prepareForCutover(ctx context.Context) error {
 	// *but* it will be started again briefly inside of the checksum
 	// runner to ensure that the lag does not grow too long.
 	r.replClient.StopPeriodicFlush()
+
+	// Increase connection pool to improve flush parallelism
+	// With 32 flush threads, we need more than the default Threads+1 connections
+	originalMaxConns := r.db.Stats().MaxOpenConnections
+	r.db.SetMaxOpenConns(r.migration.Threads * 3)
+	r.logger.Info("increased connection pool for flush", "from", originalMaxConns, "to", r.migration.Threads*3)
+
 	if err := r.replClient.Flush(ctx); err != nil {
 		return err
 	}
+
+	// Restore original connection limit after flush
+	r.db.SetMaxOpenConns(originalMaxConns)
+	r.logger.Info("restored connection pool", "max_connections", originalMaxConns)
 
 	// Run ANALYZE TABLE to update the statistics on the new table.
 	// This is required so on cutover plans don't go sideways, which
