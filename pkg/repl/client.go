@@ -309,13 +309,15 @@ func (c *Client) Run(ctx context.Context) (err error) {
 		return fmt.Errorf("failed to parse port: %w", err)
 	}
 	c.cfg = replication.BinlogSyncerConfig{
-		ServerID: c.serverID,
-		Flavor:   "mysql",
-		Host:     host,
-		Port:     uint16(port),
-		User:     c.username,
-		Password: c.password,
-		Logger:   c.logger,
+		ServerID:        c.serverID,
+		Flavor:          "mysql",
+		Host:            host,
+		Port:            uint16(port),
+		User:            c.username,
+		Password:        c.password,
+		Logger:          c.logger,
+		EventCacheCount: 51200,   // Increase from default 10,240 for faster catchup
+		RecvBufferSize:  4194304, // 4MB TCP receive buffer for network-backed storage
 	}
 
 	// Apply TLS configuration using the same infrastructure as main database connections
@@ -583,11 +585,13 @@ func (c *Client) processDDLNotification(encodedTable string) {
 // We acquire a mutex when processing row events because we don't want a new subscription
 // to be added (uses mutex) and we miss processing for rows on it.
 func (c *Client) processRowsEvent(ev *replication.BinlogEvent, e *replication.RowsEvent) error {
+	// Lookup subscription under lock, then release early
+	// Reduces lock contention since subscription has its own mutex
 	c.Lock()
-	defer c.Unlock()
-
 	subName := EncodeSchemaTable(string(e.Table.Schema), string(e.Table.Table))
 	sub, ok := c.subscriptions[subName]
+	c.Unlock()
+
 	if !ok {
 		return nil // ignore event, it could be to a _new table.
 	}
@@ -962,7 +966,7 @@ func (c *Client) BlockWait(ctx context.Context) error {
 				return nil // we are up to date!
 			}
 			// We are not caught up yet, so we need to wait.
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }
@@ -987,7 +991,7 @@ func (c *Client) blockWaitWithTimeout(ctx context.Context, timeout time.Duration
 				return nil // we are up to date!
 			}
 			// We are not caught up yet, so we need to wait.
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }
