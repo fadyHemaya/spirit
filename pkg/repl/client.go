@@ -957,6 +957,7 @@ func (c *Client) blockWaitWithTimeout(ctx context.Context, timeout time.Duration
 	if err != nil {
 		return err
 	}
+	c.logger.Info("waiting to catch up to source position", "target_position", targetPos, "current_position", c.getBufferedPos())
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	for {
