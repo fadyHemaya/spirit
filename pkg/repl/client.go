@@ -128,7 +128,7 @@ func NewClient(db *sql.DB, host string, username, password string, config *Clien
 		password:                   password,
 		logger:                     config.Logger,
 		targetBatchTime:            config.TargetBatchTime,
-		targetBatchSize:            3000, // initial starting value - increased for faster catchup
+		targetBatchSize:            500, // reduced for hot data to minimize lock contention
 		concurrency:                config.Concurrency,
 		subscriptions:              make(map[string]Subscription),
 		onDDL:                      config.OnDDL,
