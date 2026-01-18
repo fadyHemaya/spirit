@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	binlogTrivialThreshold = 2000
+	binlogTrivialThreshold = 10000
 	// DefaultBatchSize is the number of rows in each batched REPLACE/DELETE statement.
 	// Larger is better, but we need to keep the run-time of the statement well below
 	// dbconn.maximumLockTime so that it doesn't prevent copy-row tasks from failing.
@@ -128,7 +128,7 @@ func NewClient(db *sql.DB, host string, username, password string, config *Clien
 		password:                   password,
 		logger:                     config.Logger,
 		targetBatchTime:            config.TargetBatchTime,
-		targetBatchSize:            500, // reduced for hot data to minimize lock contention
+		targetBatchSize:            DefaultBatchSize, // initial starting value
 		concurrency:                config.Concurrency,
 		subscriptions:              make(map[string]Subscription),
 		onDDL:                      config.OnDDL,
