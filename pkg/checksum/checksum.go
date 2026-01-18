@@ -35,6 +35,8 @@ type CheckerConfig struct {
 	Watermark       string // optional; defines a watermark to start from
 	MaxRetries      int
 	Applier         applier.Applier // optional; indicates it is a distributed checker
+	SampleRate      int             // optional; sample every Nth chunk (0 = disabled, check all chunks)
+	WatermarkDate   string          // optional; only checksum rows with created_at >= this date (YYYY-MM-DD)
 }
 
 func NewCheckerDefaultConfig() *CheckerConfig {
@@ -84,5 +86,7 @@ func NewChecker(db *sql.DB, chunker table.Chunker, feed *repl.Client, config *Ch
 		logger:         config.Logger,
 		fixDifferences: config.FixDifferences,
 		maxRetries:     config.MaxRetries,
+		sampleRate:     config.SampleRate,
+		watermarkDate:  config.WatermarkDate,
 	}, nil
 }

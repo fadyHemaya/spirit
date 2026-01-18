@@ -148,7 +148,7 @@ func (s *deltaMap) Flush(ctx context.Context, underLock bool, lock *dbconn.Table
 		// because they come from a consistent view of a map,
 		// which is distinct keys.
 		g, errGrpCtx := errgroup.WithContext(ctx)
-		g.SetLimit(s.c.concurrency)
+		g.SetLimit(s.c.flushConcurrency)
 		for _, stmt := range stmts {
 			st := stmt
 			g.Go(func() error {

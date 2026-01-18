@@ -490,13 +490,18 @@ func (r *Runner) setupCopierCheckerAndReplClient(ctx context.Context) error {
 	r.checkpointTable = table.NewTableInfo(r.db, r.changes[0].table.SchemaName, r.checkpointTableName())
 
 	// Create the binlog subscriber first (needed for binlog throttler)
+	flushConcurrency := r.migration.FlushConcurrency
+	if flushConcurrency == 0 {
+		flushConcurrency = r.migration.Threads // default to Threads if not set
+	}
 	r.replClient = repl.NewClient(r.db, r.migration.Host, r.migration.Username, *r.migration.Password, &repl.ClientConfig{
-		Logger:          r.logger,
-		Concurrency:     r.migration.Threads,
-		TargetBatchTime: r.migration.TargetChunkTime,
-		OnDDL:           r.ddlNotification,
-		ServerID:        repl.NewServerID(),
-		DBConfig:        r.dbConfig, // Pass database configuration to replication client
+		Logger:           r.logger,
+		Concurrency:      r.migration.Threads,
+		FlushConcurrency: flushConcurrency,
+		TargetBatchTime:  r.migration.TargetChunkTime,
+		OnDDL:            r.ddlNotification,
+		ServerID:         repl.NewServerID(),
+		DBConfig:         r.dbConfig, // Pass database configuration to replication client
 	})
 	// For each of the changes, we know the new table exists now
 	// So we should call SetInfo to populate the columns etc.
@@ -541,6 +546,8 @@ func (r *Runner) setupCopierCheckerAndReplClient(ctx context.Context) error {
 		Logger:          r.logger,
 		FixDifferences:  true, // we want to repair the differences.
 		MaxRetries:      3,
+		SampleRate:      r.migration.ChecksumSampleRate,
+		WatermarkDate:   r.migration.ChecksumWatermarkDate,
 	})
 
 	return err

@@ -43,6 +43,9 @@ type Migration struct {
 	DeferCutOver         bool          `name:"defer-cutover" help:"Defer cutover (and checksum) until sentinel table is dropped" optional:"" default:"false"`
 	ForceKill            bool          `name:"force-kill" help:"Kill long-running transactions in order to acquire metadata lock (MDL) at checksum and cutover time" optional:"" default:"false"`
 	SkipChecksum           bool          `name:"skip-checksum" help:"Skip the checksum phase (use with caution - no data verification)" optional:"" default:"false"`
+	ChecksumSampleRate     int           `name:"checksum-sample-rate" help:"Sample every Nth chunk during checksum (e.g., 10 = check 10% of data, 100 = check 1%). 0 or 1 = check all chunks (default)" optional:"" default:"0"`
+	ChecksumWatermarkDate  string        `name:"checksum-watermark-date" help:"Only checksum rows with created_at >= this date (format: YYYY-MM-DD, e.g., 2025-12-18). Skips old data verification." optional:""`
+	FlushConcurrency       int           `name:"flush-concurrency" help:"Max concurrent threads for binlog flushing. 0 = use --threads value. Lower values reduce contention during checksum." optional:"" default:"0"`
 	SkipCopyRows           bool          `name:"skip-copy-rows" help:"Skip the copy rows phase and go directly to apply changeset (use when resuming and copy is complete)" optional:"" default:"false"`
 	DeferBinlogFlush       bool          `name:"defer-binlog-flush" help:"Defer binlog flushing until after copy completes (prevents deadlocks but increases memory usage)" optional:"" default:"false"`
 	SocketControl          bool          `name:"socket-control" help:"Enable Unix socket for manual throttle control (socket path: /tmp/spirit.<db>.<table>.sock)" optional:"" default:"false"`

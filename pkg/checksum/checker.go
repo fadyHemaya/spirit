@@ -38,6 +38,8 @@ type SingleChecker struct {
 	differencesFound atomic.Uint64
 	recopyLock       sync.Mutex
 	maxRetries       int
+	sampleRate       int    // Sample every Nth chunk (0 = disabled, check all chunks)
+	watermarkDate    string // Only checksum rows with created_at >= this date (YYYY-MM-DD)
 }
 
 var _ Checker = (*SingleChecker)(nil)
@@ -49,6 +51,19 @@ func (c *SingleChecker) ChecksumChunk(ctx context.Context, trxPool *dbconn.TrxPo
 		return err
 	}
 	defer trxPool.Put(trx)
+
+	// If watermark date is set, check if this chunk should be skipped
+	if c.watermarkDate != "" {
+		shouldSkip, err := c.shouldSkipChunkByDate(trx, chunk)
+		if err != nil {
+			c.logger.Warn("error checking watermark date, processing chunk anyway", "error", err)
+		} else if shouldSkip {
+			c.logger.Debug("skipping chunk (all rows before watermark date)", "chunk", chunk.String())
+			c.chunker.Feedback(chunk, 0, 0)
+			return nil
+		}
+	}
+
 	c.logger.Debug("checksumming chunk", "chunk", chunk.String())
 	source := fmt.Sprintf("SELECT BIT_XOR(CRC32(CONCAT(%s))) as checksum, count(*) as c FROM %s WHERE %s",
 		c.intersectColumns(chunk),
@@ -412,22 +427,59 @@ func (c *SingleChecker) runChecksum(ctx context.Context) error {
 
 	g, errGrpCtx := errgroup.WithContext(ctx)
 	g.SetLimit(c.concurrency)
+	chunkCounter := 0
+	totalChunks := 0
+	sampledChunks := 0
+	skippedChunks := 0
+
 	for !c.chunker.IsRead() && c.isHealthy(errGrpCtx) {
-		g.Go(func() error {
-			chunk, err := c.chunker.Next()
-			if err != nil {
-				if err == table.ErrTableIsRead {
-					return nil
-				}
-				c.setInvalid(true)
-				return err
+		chunk, err := c.chunker.Next()
+		if err != nil {
+			if err == table.ErrTableIsRead {
+				break
 			}
+			c.setInvalid(true)
+			return err
+		}
+
+		totalChunks++
+
+		// If sampling is enabled and this chunk should be skipped
+		if c.sampleRate > 0 && chunkCounter%c.sampleRate != 0 {
+			// Skip this chunk - just provide feedback to mark it as processed
+			c.chunker.Feedback(chunk, 0, 0)
+			chunkCounter++
+			skippedChunks++
+			continue
+		}
+
+		chunkCounter++
+		sampledChunks++
+
+		// Process the chunk (either sampling is disabled or this chunk is sampled)
+		g.Go(func() error {
 			if err := c.ChecksumChunk(errGrpCtx, c.trxPool, chunk); err != nil {
 				c.setInvalid(true)
 				return err
 			}
 			return nil
 		})
+	}
+
+	if c.sampleRate > 0 {
+		c.logger.Info("checksum sampling complete",
+			"total_chunks", totalChunks,
+			"sampled_chunks", sampledChunks,
+			"skipped_chunks", skippedChunks,
+			"sample_rate", fmt.Sprintf("1/%d (%.1f%%)", c.sampleRate, 100.0/float64(c.sampleRate)),
+		)
+	}
+	if c.watermarkDate != "" {
+		c.logger.Info("checksum watermark filtering applied",
+			"watermark_date", c.watermarkDate,
+			"total_chunks", totalChunks,
+			"note", "old chunks skipped automatically",
+		)
 	}
 	// wait for all work to finish
 	err1 := g.Wait()
@@ -474,6 +526,41 @@ func (c *SingleChecker) waitForIdleConnections(ctx context.Context, timeout time
 	
 	stats := c.db.Stats()
 	return fmt.Errorf("timeout waiting for idle connections, still have %d in use", stats.InUse)
+}
+
+// shouldSkipChunkByDate checks if all rows in a chunk are before the watermark date.
+// Returns true if the chunk should be skipped (all rows are old), false if it should be checked.
+func (c *SingleChecker) shouldSkipChunkByDate(trx *sql.Tx, chunk *table.Chunk) (bool, error) {
+	// Query to check the max(created_at) in this chunk
+	// If max(created_at) < watermark date, skip the entire chunk
+	query := fmt.Sprintf("SELECT MAX(created_at) FROM %s WHERE %s",
+		chunk.Table.QuotedName,
+		chunk.String(),
+	)
+
+	var maxCreatedAt sql.NullTime
+	err := trx.QueryRow(query).Scan(&maxCreatedAt)
+	if err != nil {
+		return false, err
+	}
+
+	// If there are no rows or all created_at are NULL, don't skip
+	if !maxCreatedAt.Valid {
+		return false, nil
+	}
+
+	// Parse the watermark date
+	watermarkTime, err := time.Parse("2006-01-02", c.watermarkDate)
+	if err != nil {
+		return false, fmt.Errorf("invalid watermark date format (expected YYYY-MM-DD): %w", err)
+	}
+
+	// If the newest row in this chunk is before the watermark, skip it
+	if maxCreatedAt.Time.Before(watermarkTime) {
+		return true, nil
+	}
+
+	return false, nil
 }
 
 // intersectColumns is similar to utils.IntersectColumns, but it

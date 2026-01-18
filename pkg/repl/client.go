@@ -88,11 +88,12 @@ type Client struct {
 	bufferedPos mysql.Position // buffered position
 	flushedPos  mysql.Position // safely written to new table
 
-	statisticsLock  sync.Mutex
-	targetBatchTime time.Duration
-	targetBatchSize int64 // will auto-adjust over time, use atomic to read/set
-	timingHistory   []time.Duration
-	concurrency     int
+	statisticsLock   sync.Mutex
+	targetBatchTime  time.Duration
+	targetBatchSize  int64 // will auto-adjust over time, use atomic to read/set
+	timingHistory    []time.Duration
+	concurrency      int
+	flushConcurrency int // Max concurrent threads for flushing
 
 	isMySQL84 bool
 
@@ -120,6 +121,10 @@ func NewClient(db *sql.DB, host string, username, password string, config *Clien
 	if config.DBConfig == nil {
 		config.DBConfig = dbconn.NewDBConfig() // default DB config
 	}
+	flushConcurrency := config.FlushConcurrency
+	if flushConcurrency == 0 {
+		flushConcurrency = config.Concurrency // default to Concurrency if not set
+	}
 	return &Client{
 		db:                         db,
 		dbConfig:                   config.DBConfig,
@@ -130,6 +135,7 @@ func NewClient(db *sql.DB, host string, username, password string, config *Clien
 		targetBatchTime:            config.TargetBatchTime,
 		targetBatchSize:            DefaultBatchSize, // initial starting value
 		concurrency:                config.Concurrency,
+		flushConcurrency:           flushConcurrency,
 		subscriptions:              make(map[string]Subscription),
 		onDDL:                      config.OnDDL,
 		serverID:                   config.ServerID,
@@ -141,6 +147,7 @@ func NewClient(db *sql.DB, host string, username, password string, config *Clien
 type ClientConfig struct {
 	TargetBatchTime            time.Duration
 	Concurrency                int
+	FlushConcurrency           int // Max concurrent threads for flushing. 0 = use Concurrency value
 	Logger                     *slog.Logger
 	OnDDL                      chan string
 	ServerID                   uint32
