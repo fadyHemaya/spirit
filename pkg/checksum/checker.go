@@ -56,10 +56,11 @@ func (c *SingleChecker) ChecksumChunk(ctx context.Context, trxPool *dbconn.TrxPo
 
 	// If watermark ID is set, check if this chunk should be skipped (fast - no query)
 	if c.watermarkID != "" {
-		shouldSkip := c.shouldSkipChunkByID(chunk)
+		shouldSkip, estimatedRows := c.shouldSkipChunkByID(chunk)
 		if shouldSkip {
 			c.logger.Debug("skipping chunk (all rows before watermark ID)", "chunk", chunk.String())
-			c.chunker.Feedback(chunk, 0, 0)
+			// Report estimated rows so progress counter advances even for skipped chunks
+			c.chunker.Feedback(chunk, 0, estimatedRows)
 			return nil
 		}
 	}
@@ -550,31 +551,42 @@ func (c *SingleChecker) waitForIdleConnections(ctx context.Context, timeout time
 // shouldSkipChunkByID checks if all rows in a chunk are before the watermark ID.
 // This is MUCH faster than shouldSkipChunkByDate because it doesn't require a database query.
 // It just compares the chunk's upper bound with the watermark ID.
-func (c *SingleChecker) shouldSkipChunkByID(chunk *table.Chunk) bool {
+// Returns (shouldSkip, estimatedRows)
+func (c *SingleChecker) shouldSkipChunkByID(chunk *table.Chunk) (bool, uint64) {
 	// Parse the watermark ID
 	watermarkID, err := strconv.ParseInt(c.watermarkID, 10, 64)
 	if err != nil {
 		c.logger.Warn("invalid watermark ID, ignoring", "watermark_id", c.watermarkID, "error", err)
-		return false
+		return false, 0
 	}
 
 	// Get the chunk's upper bound for the first key (id)
 	// Chunk format: id >= X AND id < Y
-	if chunk.UpperBound != nil && len(chunk.UpperBound.Value) > 0 {
+	if chunk.UpperBound != nil && len(chunk.UpperBound.Value) > 0 &&
+	   chunk.LowerBound != nil && len(chunk.LowerBound.Value) > 0 {
 		upperBoundStr := fmt.Sprintf("%v", chunk.UpperBound.Value[0])
+		lowerBoundStr := fmt.Sprintf("%v", chunk.LowerBound.Value[0])
+
 		upperBoundID, err := strconv.ParseInt(upperBoundStr, 10, 64)
 		if err != nil {
 			// Can't parse, don't skip
-			return false
+			return false, 0
+		}
+
+		lowerBoundID, err := strconv.ParseInt(lowerBoundStr, 10, 64)
+		if err != nil {
+			return false, 0
 		}
 
 		// If the chunk's highest ID is below the watermark, skip it
 		if upperBoundID <= watermarkID {
-			return true
+			// Estimate rows as the ID range (rough approximation)
+			estimatedRows := uint64(upperBoundID - lowerBoundID)
+			return true, estimatedRows
 		}
 	}
 
-	return false
+	return false, 0
 }
 
 // shouldSkipChunkByDate checks if all rows in a chunk are before the watermark date.
