@@ -80,13 +80,19 @@ func (t *chunkerComposite) Next() (*Chunk, error) {
 	// Start prefetching the next chunk
 	// First assume it's the first chunk, we can overwrite this
 	// just below.
+	// Cap OFFSET at 5000 to prevent slow queries on large tables
+	// OFFSET becomes extremely slow on billion-row tables with high values
+	offsetSize := t.chunkSize
+	if offsetSize > 5000 {
+		offsetSize = 5000
+	}
 	query := fmt.Sprintf("SELECT %s FROM %s FORCE INDEX (%s) %s ORDER BY %s LIMIT 1 OFFSET %d",
 		strings.Join(t.chunkKeys, ","),
 		t.Ti.QuotedName,
 		t.keyName,
 		t.additionalConditionsSQL(false),
 		strings.Join(t.chunkKeys, ","),
-		t.chunkSize,
+		offsetSize,
 	)
 	if !t.isFirstChunk() {
 		// This is not the first chunk, since we have pointers set.
@@ -97,7 +103,7 @@ func (t *chunkerComposite) Next() (*Chunk, error) {
 			expandRowConstructorComparison(t.chunkKeys, OpGreaterThan, t.chunkPtrs),
 			t.additionalConditionsSQL(true),
 			strings.Join(t.chunkKeys, ","), // order by
-			t.chunkSize,
+			offsetSize,
 		)
 	}
 	upperDatums, err := t.nextQueryToDatums(query)
