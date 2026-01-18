@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -40,6 +41,7 @@ type SingleChecker struct {
 	maxRetries       int
 	sampleRate       int    // Sample every Nth chunk (0 = disabled, check all chunks)
 	watermarkDate    string // Only checksum rows with created_at >= this date (YYYY-MM-DD)
+	watermarkID      string // Only checksum rows with id >= this value
 }
 
 var _ Checker = (*SingleChecker)(nil)
@@ -52,7 +54,17 @@ func (c *SingleChecker) ChecksumChunk(ctx context.Context, trxPool *dbconn.TrxPo
 	}
 	defer trxPool.Put(trx)
 
-	// If watermark date is set, check if this chunk should be skipped
+	// If watermark ID is set, check if this chunk should be skipped (fast - no query)
+	if c.watermarkID != "" {
+		shouldSkip := c.shouldSkipChunkByID(chunk)
+		if shouldSkip {
+			c.logger.Debug("skipping chunk (all rows before watermark ID)", "chunk", chunk.String())
+			c.chunker.Feedback(chunk, 0, 0)
+			return nil
+		}
+	}
+
+	// If watermark date is set, check if this chunk should be skipped (slower - requires query)
 	if c.watermarkDate != "" {
 		shouldSkip, err := c.shouldSkipChunkByDate(trx, chunk)
 		if err != nil {
@@ -474,11 +486,18 @@ func (c *SingleChecker) runChecksum(ctx context.Context) error {
 			"sample_rate", fmt.Sprintf("1/%d (%.1f%%)", c.sampleRate, 100.0/float64(c.sampleRate)),
 		)
 	}
+	if c.watermarkID != "" {
+		c.logger.Info("checksum watermark ID filtering applied",
+			"watermark_id", c.watermarkID,
+			"total_chunks", totalChunks,
+			"note", "chunks with id < watermark skipped (no query needed)",
+		)
+	}
 	if c.watermarkDate != "" {
-		c.logger.Info("checksum watermark filtering applied",
+		c.logger.Info("checksum watermark date filtering applied",
 			"watermark_date", c.watermarkDate,
 			"total_chunks", totalChunks,
-			"note", "old chunks skipped automatically",
+			"note", "old chunks skipped (requires MAX(created_at) query per chunk)",
 		)
 	}
 	// wait for all work to finish
@@ -526,6 +545,36 @@ func (c *SingleChecker) waitForIdleConnections(ctx context.Context, timeout time
 	
 	stats := c.db.Stats()
 	return fmt.Errorf("timeout waiting for idle connections, still have %d in use", stats.InUse)
+}
+
+// shouldSkipChunkByID checks if all rows in a chunk are before the watermark ID.
+// This is MUCH faster than shouldSkipChunkByDate because it doesn't require a database query.
+// It just compares the chunk's upper bound with the watermark ID.
+func (c *SingleChecker) shouldSkipChunkByID(chunk *table.Chunk) bool {
+	// Parse the watermark ID
+	watermarkID, err := strconv.ParseInt(c.watermarkID, 10, 64)
+	if err != nil {
+		c.logger.Warn("invalid watermark ID, ignoring", "watermark_id", c.watermarkID, "error", err)
+		return false
+	}
+
+	// Get the chunk's upper bound for the first key (id)
+	// Chunk format: id >= X AND id < Y
+	if chunk.UpperBound != nil && len(chunk.UpperBound.Value) > 0 {
+		upperBoundStr := fmt.Sprintf("%v", chunk.UpperBound.Value[0])
+		upperBoundID, err := strconv.ParseInt(upperBoundStr, 10, 64)
+		if err != nil {
+			// Can't parse, don't skip
+			return false
+		}
+
+		// If the chunk's highest ID is below the watermark, skip it
+		if upperBoundID <= watermarkID {
+			return true
+		}
+	}
+
+	return false
 }
 
 // shouldSkipChunkByDate checks if all rows in a chunk are before the watermark date.

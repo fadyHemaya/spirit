@@ -557,6 +557,7 @@ func (r *Runner) setupCopierCheckerAndReplClient(ctx context.Context) error {
 		MaxRetries:      3,
 		SampleRate:      r.migration.ChecksumSampleRate,
 		WatermarkDate:   r.migration.ChecksumWatermarkDate,
+		WatermarkID:     r.migration.ChecksumWatermarkID,
 	})
 
 	return err
