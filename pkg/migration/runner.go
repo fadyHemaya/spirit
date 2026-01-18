@@ -151,6 +151,10 @@ func (r *Runner) Run(ctx context.Context) error {
 		// Plus it has read threads. Set this high and figure it out later.
 		r.dbConfig.MaxOpenConnections = 100
 	}
+	r.logger.Info("connection pool configuration",
+		"threads", r.migration.Threads,
+		"max_open_connections", r.dbConfig.MaxOpenConnections,
+	)
 	r.db, err = dbconn.New(r.dsn(), r.dbConfig)
 	if err != nil {
 		return fmt.Errorf("failed to connect to main database (DSN: %s): %w", maskPasswordInDSN(r.dsn()), err)
@@ -494,6 +498,11 @@ func (r *Runner) setupCopierCheckerAndReplClient(ctx context.Context) error {
 	if flushConcurrency == 0 {
 		flushConcurrency = r.migration.Threads // default to Threads if not set
 	}
+	r.logger.Info("binlog flush configuration",
+		"threads", r.migration.Threads,
+		"flush_concurrency", flushConcurrency,
+		"max_connections", r.dbConfig.MaxOpenConnections,
+	)
 	r.replClient = repl.NewClient(r.db, r.migration.Host, r.migration.Username, *r.migration.Password, &repl.ClientConfig{
 		Logger:           r.logger,
 		Concurrency:      r.migration.Threads,
