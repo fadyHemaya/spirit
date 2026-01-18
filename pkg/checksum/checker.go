@@ -538,15 +538,30 @@ func (c *SingleChecker) shouldSkipChunkByDate(trx *sql.Tx, chunk *table.Chunk) (
 		chunk.String(),
 	)
 
-	var maxCreatedAt sql.NullTime
-	err := trx.QueryRow(query).Scan(&maxCreatedAt)
+	var maxCreatedAtBytes []byte
+	err := trx.QueryRow(query).Scan(&maxCreatedAtBytes)
 	if err != nil {
 		return false, err
 	}
 
 	// If there are no rows or all created_at are NULL, don't skip
-	if !maxCreatedAt.Valid {
+	if maxCreatedAtBytes == nil || len(maxCreatedAtBytes) == 0 {
 		return false, nil
+	}
+
+	// Parse the timestamp from bytes
+	// MySQL returns timestamps in format: "2006-01-02 15:04:05" or "2006-01-02"
+	maxCreatedAtStr := string(maxCreatedAtBytes)
+	var maxCreatedAt time.Time
+
+	// Try parsing with datetime format first
+	maxCreatedAt, err = time.Parse("2006-01-02 15:04:05", maxCreatedAtStr)
+	if err != nil {
+		// Try parsing with date-only format
+		maxCreatedAt, err = time.Parse("2006-01-02", maxCreatedAtStr)
+		if err != nil {
+			return false, fmt.Errorf("failed to parse created_at value '%s': %w", maxCreatedAtStr, err)
+		}
 	}
 
 	// Parse the watermark date
@@ -556,7 +571,7 @@ func (c *SingleChecker) shouldSkipChunkByDate(trx *sql.Tx, chunk *table.Chunk) (
 	}
 
 	// If the newest row in this chunk is before the watermark, skip it
-	if maxCreatedAt.Time.Before(watermarkTime) {
+	if maxCreatedAt.Before(watermarkTime) {
 		return true, nil
 	}
 
