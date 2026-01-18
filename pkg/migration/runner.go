@@ -142,11 +142,10 @@ func (r *Runner) Run(ctx context.Context) error {
 	// The copier and checker will use Threads to limit N tasks concurrently,
 	// but we also set it at the DB pool level with +1. Because the copier and
 	// the replication applier use the same pool, it allows for some natural throttling
-	// of the copier if the replication applier is lagging. Because it's +1 it
-	// means that the replication applier can always make progress immediately,
-	// and does not need to wait for free slots from the copier *until* it needs
-	// copy in more than 1 thread.
-	r.dbConfig.MaxOpenConnections = r.migration.Threads + 1
+	// Increase connection pool to support concurrent flush operations
+	// With 32 flush threads, we need significantly more than Threads+1
+	// to avoid goroutines waiting for available connections
+	r.dbConfig.MaxOpenConnections = r.migration.Threads * 3
 	if r.migration.EnableExperimentalBufferedCopy {
 		// Buffered has many more connections because it fans out x8 more write threads
 		// Plus it has read threads. Set this high and figure it out later.
