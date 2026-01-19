@@ -948,18 +948,40 @@ func (r *Runner) resumeFromCheckpoint(ctx context.Context) error {
 	}
 
 	if checksumWatermark != "" {
-		if err := r.checksumChunker.OpenAtWatermark(checksumWatermark); err != nil {
-			return err
-		}
-		// If checksum watermark ID is set and checkpoint is before it, fast-forward
+		// If checksum watermark ID is set and checkpoint is before it, fast-forward directly
+		// (don't open at checkpoint first, then try to reset/reopen)
 		if r.migration.ChecksumWatermarkID != "" {
 			if err := r.fastForwardChecksumToWatermark(checksumWatermark); err != nil {
-				r.logger.Warn("could not fast-forward checksum to watermark ID, continuing from checkpoint", "error", err)
+				r.logger.Warn("could not fast-forward checksum to watermark ID, opening at checkpoint instead", "error", err)
+				// Fast-forward failed, fall back to opening at checkpoint
+				if err := r.checksumChunker.OpenAtWatermark(checksumWatermark); err != nil {
+					return err
+				}
+			}
+		} else {
+			// No fast-forward needed, open at checkpoint normally
+			if err := r.checksumChunker.OpenAtWatermark(checksumWatermark); err != nil {
+				return err
 			}
 		}
 	} else {
-		if err = r.checksumChunker.Open(); err != nil {
-			return err
+		// No checkpoint, check if we should start from watermark ID
+		if r.migration.ChecksumWatermarkID != "" {
+			watermarkID, err := strconv.ParseInt(r.migration.ChecksumWatermarkID, 10, 64)
+			if err != nil {
+				return fmt.Errorf("invalid checksum watermark ID: %w", err)
+			}
+			r.logger.Info("starting checksum from watermark ID", "watermark_id", watermarkID)
+			initialWatermark := fmt.Sprintf(`{"ChunkJSON":"{\"Key\":[\"id\",\"deleted_at\"],\"ChunkSize\":1000,\"LowerBound\":{\"Value\":[\"%d\",\"1970-01-01 00:00:00\"],\"Inclusive\":true},\"UpperBound\":{\"Value\":[\"%d\",\"1970-01-01 00:00:00\"],\"Inclusive\":false}}","RowsCopied\":0}`,
+				watermarkID, watermarkID+1000)
+			if err := r.checksumChunker.OpenAtWatermark(initialWatermark); err != nil {
+				return fmt.Errorf("could not open checksum chunker at watermark: %w", err)
+			}
+		} else {
+			// No watermark ID, open from beginning
+			if err = r.checksumChunker.Open(); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1043,20 +1065,25 @@ func (r *Runner) fastForwardChecksumToWatermark(checksumWatermark string) error 
 		)
 
 		// Create new watermark at the watermark ID
-		newWatermark := fmt.Sprintf(`{"ChunkJSON":"{\"Key\":[\"id\",\"deleted_at\"],\"ChunkSize\":2250,\"LowerBound\":{\"Value\":[\"%d\",\"1970-01-01 00:00:00\"],\"Inclusive\":true},\"UpperBound\":{\"Value\":[\"%d\",\"1970-01-01 00:00:00\"],\"Inclusive\":false}}","RowsCopied":0}`,
-			watermarkID, watermarkID+2250)
+		newWatermark := fmt.Sprintf(`{"ChunkJSON":"{\"Key\":[\"id\",\"deleted_at\"],\"ChunkSize\":1000,\"LowerBound\":{\"Value\":[\"%d\",\"1970-01-01 00:00:00\"],\"Inclusive\":true},\"UpperBound\":{\"Value\":[\"%d\",\"1970-01-01 00:00:00\"],\"Inclusive\":false}}","RowsCopied":0}`,
+			watermarkID, watermarkID+1000)
 
-		// Reset and reopen chunker at new watermark
-		r.logger.Info("resetting checksum chunker before fast-forward")
-		if err := r.checksumChunker.Reset(); err != nil {
-			return fmt.Errorf("could not reset chunker: %w", err)
-		}
-		r.logger.Info("reset successful, reopening at watermark")
+		// Open chunker at new watermark (chunker is not open yet in this code path)
 		if err := r.checksumChunker.OpenAtWatermark(newWatermark); err != nil {
-			return fmt.Errorf("could not reopen chunker at watermark: %w", err)
+			return fmt.Errorf("could not open chunker at watermark: %w", err)
 		}
 
 		r.logger.Info("checksum fast-forwarded to watermark ID", "new_position", watermarkID)
+		return nil
+	}
+
+	// Checkpoint is already at or after watermark, open at checkpoint normally
+	r.logger.Info("checksum checkpoint is at or after watermark ID, resuming from checkpoint",
+		"checkpoint_id", currentID,
+		"watermark_id", watermarkID,
+	)
+	if err := r.checksumChunker.OpenAtWatermark(checksumWatermark); err != nil {
+		return fmt.Errorf("could not open chunker at checkpoint: %w", err)
 	}
 
 	return nil
