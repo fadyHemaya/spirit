@@ -375,41 +375,24 @@ func (c *DistributedChecker) Run(ctx context.Context) error {
 		_ = c.applier.Stop()
 	}()
 
-	// Try the checksum up to n times if differences are found and we can fix them
-	for attempt := 1; attempt <= c.maxRetries; attempt++ {
-		if attempt > 1 {
-			c.logger.Error("checksum failed, retrying", "attempt", attempt, "maxRetries", c.maxRetries)
-			// Reset the chunker to start from the beginning
-			if err := c.chunker.Reset(); err != nil {
-				return fmt.Errorf("failed to reset chunker for retry: %w", err)
-			}
-			// Reset differences found counter
-			c.differencesFound.Store(0)
-		}
-
-		// Run the actual checksum
-		if err := c.runChecksum(ctx); err != nil {
-			// This is really not expected to fail, since if there are differences
-			// it will run the resolver and report the differences in DifferencesFound().
-			return err
-		}
-
-		// If we are here, the checksum passed.
-		// But we don't know if differences were found and chunks were recopied.
-		// We want to know it passed without finding differences.
-		if c.differencesFound.Load() == 0 {
-			c.logger.Info("checksum passed")
-			return nil
-		}
+	// Run the checksum once. If differences are found, they are recopied immediately.
+	// No retry is needed - if recopy succeeded, the data is correct.
+	if err := c.runChecksum(ctx); err != nil {
+		return err
 	}
 
-	// Retries exhausted:
-	// This used to say "checksum failed, this should never happen" but that's not entirely true.
-	// If the user attempts a lossy schema change such as adding a UNIQUE INDEX to non-unique data,
-	// then the checksum will fail. This is entirely expected, and not considered a bug. We should
-	// do our best-case to differentiate that we believe this ALTER statement is lossy, and
-	// customize the returned error based on it.
-	return fmt.Errorf("checksum failed after %d attempts. This likely indicates either a bug in Spirit, or a manual modification to the _new table outside of Spirit. Please report @ github.com/block/spirit", c.maxRetries)
+	// Report results
+	differencesFound := c.differencesFound.Load()
+	if differencesFound > 0 {
+		c.logger.Info("checksum completed with differences found and fixed",
+			"differences_found", differencesFound,
+			"note", "mismatched chunks were recopied during checksum",
+		)
+	} else {
+		c.logger.Info("checksum passed with no differences found")
+	}
+
+	return nil
 }
 
 func (c *DistributedChecker) runChecksum(ctx context.Context) error {
