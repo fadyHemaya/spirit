@@ -1031,7 +1031,10 @@ func (r *Runner) fastForwardChecksumToWatermark(checksumWatermark string) error 
 		newWatermark := fmt.Sprintf(`{"ChunkJSON":"{\"Key\":[\"id\",\"deleted_at\"],\"ChunkSize\":2250,\"LowerBound\":{\"Value\":[\"%d\",\"1970-01-01 00:00:00\"],\"Inclusive\":true},\"UpperBound\":{\"Value\":[\"%d\",\"1970-01-01 00:00:00\"],\"Inclusive\":false}}","RowsCopied":0}`,
 			watermarkID, watermarkID+2250)
 
-		// Reopen chunker at new watermark
+		// Reset and reopen chunker at new watermark
+		if err := r.checksumChunker.Reset(); err != nil {
+			return fmt.Errorf("could not reset chunker: %w", err)
+		}
 		if err := r.checksumChunker.OpenAtWatermark(newWatermark); err != nil {
 			return fmt.Errorf("could not reopen chunker at watermark: %w", err)
 		}
