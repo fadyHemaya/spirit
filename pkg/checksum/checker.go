@@ -56,11 +56,12 @@ func (c *SingleChecker) ChecksumChunk(ctx context.Context, trxPool *dbconn.TrxPo
 
 	// If watermark ID is set, check if this chunk should be skipped (fast - no query)
 	if c.watermarkID != "" {
-		shouldSkip, estimatedRows := c.shouldSkipChunkByID(chunk)
+		shouldSkip, _ := c.shouldSkipChunkByID(chunk)
 		if shouldSkip {
 			c.logger.Debug("skipping chunk (all rows before watermark ID)", "chunk", chunk.String())
-			// Report estimated rows so progress counter advances even for skipped chunks
-			c.chunker.Feedback(chunk, 0, estimatedRows)
+			// Report 0 rows for skipped chunks to avoid progress counter issues
+			// The chunker will still advance the position, but won't inflate the row count
+			c.chunker.Feedback(chunk, 0, 0)
 			return nil
 		}
 	}
