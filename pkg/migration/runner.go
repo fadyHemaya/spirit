@@ -1056,15 +1056,23 @@ func (r *Runner) fastForwardChecksumToWatermark(checksumWatermark string) error 
 		return fmt.Errorf("invalid watermark ID: %w", err)
 	}
 
-	// If checkpoint is before watermark, fast-forward
-	if currentID < watermarkID {
-		r.logger.Info("checksum checkpoint is before watermark ID, fast-forwarding",
-			"checkpoint_id", currentID,
-			"watermark_id", watermarkID,
-			"skipping_ids", watermarkID - currentID,
-		)
+	// Always respect the watermark ID flag, regardless of checkpoint position
+	if currentID != watermarkID {
+		if currentID < watermarkID {
+			r.logger.Info("checksum checkpoint is before watermark ID, fast-forwarding",
+				"checkpoint_id", currentID,
+				"watermark_id", watermarkID,
+				"skipping_ids", watermarkID - currentID,
+			)
+		} else {
+			r.logger.Info("checksum checkpoint is after watermark ID, moving backward to watermark",
+				"checkpoint_id", currentID,
+				"watermark_id", watermarkID,
+				"rechecking_ids", currentID - watermarkID,
+			)
+		}
 
-		// Create new watermark at the watermark ID
+		// Create new watermark at the specified watermark ID (works for both forward and backward)
 		newWatermark := fmt.Sprintf(`{"ChunkJSON":"{\"Key\":[\"id\",\"deleted_at\"],\"ChunkSize\":1000,\"LowerBound\":{\"Value\":[\"%d\",\"1970-01-01 00:00:00\"],\"Inclusive\":true},\"UpperBound\":{\"Value\":[\"%d\",\"1970-01-01 00:00:00\"],\"Inclusive\":false}}","RowsCopied":0}`,
 			watermarkID, watermarkID+1000)
 
@@ -1073,14 +1081,13 @@ func (r *Runner) fastForwardChecksumToWatermark(checksumWatermark string) error 
 			return fmt.Errorf("could not open chunker at watermark: %w", err)
 		}
 
-		r.logger.Info("checksum fast-forwarded to watermark ID", "new_position", watermarkID)
+		r.logger.Info("checksum position set to watermark ID", "new_position", watermarkID)
 		return nil
 	}
 
-	// Checkpoint is already at or after watermark, open at checkpoint normally
-	r.logger.Info("checksum checkpoint is at or after watermark ID, resuming from checkpoint",
+	// Checkpoint is exactly at watermark, open at checkpoint normally
+	r.logger.Info("checksum checkpoint matches watermark ID, resuming from checkpoint",
 		"checkpoint_id", currentID,
-		"watermark_id", watermarkID,
 	)
 	if err := r.checksumChunker.OpenAtWatermark(checksumWatermark); err != nil {
 		return fmt.Errorf("could not open chunker at checkpoint: %w", err)
