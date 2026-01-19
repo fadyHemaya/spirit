@@ -3,9 +3,11 @@ package migration
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -934,6 +936,12 @@ func (r *Runner) resumeFromCheckpoint(ctx context.Context) error {
 		if err := r.checksumChunker.OpenAtWatermark(checksumWatermark); err != nil {
 			return err
 		}
+		// If checksum watermark ID is set and checkpoint is before it, fast-forward
+		if r.migration.ChecksumWatermarkID != "" {
+			if err := r.fastForwardChecksumToWatermark(checksumWatermark); err != nil {
+				r.logger.Warn("could not fast-forward checksum to watermark ID, continuing from checkpoint", "error", err)
+			}
+		}
 	} else {
 		if err = r.checksumChunker.Open(); err != nil {
 			return err
@@ -970,6 +978,67 @@ func (r *Runner) resumeFromCheckpoint(ctx context.Context) error {
 		"log-pos", binlogPos,
 	)
 	r.usedResumeFromCheckpoint = true
+	return nil
+}
+
+// fastForwardChecksumToWatermark skips the checksum chunker to the watermark ID if the checkpoint is behind it.
+func (r *Runner) fastForwardChecksumToWatermark(checksumWatermark string) error {
+	var watermark struct {
+		ChunkJSON   string `json:"ChunkJSON"`
+		RowsCopied  uint64 `json:"RowsCopied"`
+	}
+	if err := json.Unmarshal([]byte(checksumWatermark), &watermark); err != nil {
+		return fmt.Errorf("could not parse checksum watermark: %w", err)
+	}
+
+	// Parse the chunk to get the current ID
+	var chunkData struct {
+		Key        []string `json:"Key"`
+		LowerBound struct {
+			Value []interface{} `json:"Value"`
+		} `json:"LowerBound"`
+	}
+	if err := json.Unmarshal([]byte(watermark.ChunkJSON), &chunkData); err != nil {
+		return fmt.Errorf("could not parse chunk JSON: %w", err)
+	}
+
+	if len(chunkData.LowerBound.Value) == 0 {
+		return fmt.Errorf("no lower bound value in checkpoint")
+	}
+
+	// Get current checkpoint ID
+	currentIDStr := fmt.Sprintf("%v", chunkData.LowerBound.Value[0])
+	currentID, err := strconv.ParseInt(currentIDStr, 10, 64)
+	if err != nil {
+		return fmt.Errorf("could not parse current ID: %w", err)
+	}
+
+	// Get watermark ID
+	watermarkID, err := strconv.ParseInt(r.migration.ChecksumWatermarkID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid watermark ID: %w", err)
+	}
+
+	// If checkpoint is before watermark, fast-forward
+	if currentID < watermarkID {
+		r.logger.Info("checksum checkpoint is before watermark ID, fast-forwarding",
+			"checkpoint_id", currentID,
+			"watermark_id", watermarkID,
+			"skipping_ids", watermarkID - currentID,
+		)
+
+		// Create new watermark at the watermark ID
+		newWatermark := fmt.Sprintf(`{"ChunkJSON":"{\"Key\":[\"id\",\"deleted_at\"],\"ChunkSize\":2250,\"LowerBound\":{\"Value\":[\"%d\",\"1970-01-01 00:00:00\"],\"Inclusive\":true},\"UpperBound\":{\"Value\":[\"%d\",\"1970-01-01 00:00:00\"],\"Inclusive\":false}}","RowsCopied":0}`,
+			watermarkID, watermarkID+2250)
+
+		// Reopen chunker at new watermark
+		if err := r.checksumChunker.OpenAtWatermark(newWatermark); err != nil {
+			return fmt.Errorf("could not reopen chunker at watermark: %w", err)
+		}
+
+		r.logger.Info("checksum fast-forwarded to watermark ID", "new_position", watermarkID)
+	}
+
 	return nil
 }
 
