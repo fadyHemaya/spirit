@@ -1032,9 +1032,11 @@ func (r *Runner) fastForwardChecksumToWatermark(checksumWatermark string) error 
 			watermarkID, watermarkID+2250)
 
 		// Reset and reopen chunker at new watermark
+		r.logger.Info("resetting checksum chunker before fast-forward")
 		if err := r.checksumChunker.Reset(); err != nil {
 			return fmt.Errorf("could not reset chunker: %w", err)
 		}
+		r.logger.Info("reset successful, reopening at watermark")
 		if err := r.checksumChunker.OpenAtWatermark(newWatermark); err != nil {
 			return fmt.Errorf("could not reopen chunker at watermark: %w", err)
 		}
