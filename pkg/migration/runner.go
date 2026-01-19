@@ -596,8 +596,23 @@ func (r *Runner) newMigration(ctx context.Context) error {
 		return err // could not open chunker
 	}
 
-	if err := r.checksumChunker.Open(); err != nil {
-		return err
+	// If checksum watermark ID is set, start from that position instead of the beginning
+	if r.migration.ChecksumWatermarkID != "" {
+		watermarkID, err := strconv.ParseInt(r.migration.ChecksumWatermarkID, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid checksum watermark ID: %w", err)
+		}
+		r.logger.Info("starting checksum from watermark ID", "watermark_id", watermarkID)
+		// Create initial watermark at the watermark ID
+		initialWatermark := fmt.Sprintf(`{"ChunkJSON":"{\"Key\":[\"id\",\"deleted_at\"],\"ChunkSize\":1000,\"LowerBound\":{\"Value\":[\"%d\",\"1970-01-01 00:00:00\"],\"Inclusive\":true},\"UpperBound\":{\"Value\":[\"%d\",\"1970-01-01 00:00:00\"],\"Inclusive\":false}}","RowsCopied\":0}`,
+			watermarkID, watermarkID+1000)
+		if err := r.checksumChunker.OpenAtWatermark(initialWatermark); err != nil {
+			return fmt.Errorf("could not open checksum chunker at watermark: %w", err)
+		}
+	} else {
+		if err := r.checksumChunker.Open(); err != nil {
+			return err
+		}
 	}
 
 	// This is setup the same way in both code-paths,
